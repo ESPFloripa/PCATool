@@ -1249,7 +1249,7 @@ function showResults() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxf-r_vlkeTH37j5pqownwB8joYq15Ua0-be6hJlm2uWFpKnBTqF78YvB7T5F19SQGTwg/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyQADQ1g7c8V1OCE32IDgsTBm1uE-z9gfzLtexIhDUgrxqZkTiL-9OK5wBfYnZhAKr0mA/exec';
 
 function buildSheetPayload() {
   const name    = document.getElementById('profName').value    || '';
@@ -1282,7 +1282,6 @@ function buildSheetPayload() {
   const fmt = v => v !== null ? v.toFixed(1).replace('.',',') : 'N/C';
   const cls = v => v === null ? '' : v >= 6.6 ? 'Alto escore' : 'Baixo escore';
 
-  // Build headers
   const answerIds = sections.flatMap(sec => getVisibleQuestions(sec).map(q => q.id));
   const headers = [
     'Data', 'Nome', 'Categoria', 'Serviço', 'Faixa etária atendida',
@@ -1293,7 +1292,6 @@ function buildSheetPayload() {
     ...answerIds
   ];
 
-  // Build data row
   const row = [
     date, name, cat, service, pgLabel,
     fmt(essentialScore), cls(essentialScore),
@@ -1311,8 +1309,8 @@ function buildSheetPayload() {
   return { headers, row };
 }
 
-async function sendToDrive() {
-  const btn = document.getElementById('btnDrive');
+function sendToDrive() {
+  const btn    = document.getElementById('btnDrive');
   const status = document.getElementById('driveStatus');
 
   btn.disabled = true;
@@ -1320,29 +1318,52 @@ async function sendToDrive() {
   status.style.display = 'block';
   status.style.background = '#f0f4f8';
   status.style.color = 'var(--text-soft)';
-  status.textContent = 'Enviando seus resultados para o Google Drive…';
+  status.textContent = 'Enviando seus resultados…';
 
-  try {
-    const payload = buildSheetPayload();
-    const response = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
-    });
+  // Create hidden iframe as submission target
+  let iframe = document.getElementById('_submitFrame');
+  if (!iframe) {
+    iframe = document.createElement('iframe');
+    iframe.name = '_submitFrame';
+    iframe.id   = '_submitFrame';
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+  }
 
-    // no-cors always returns opaque response — assume success if no exception thrown
+  // Build and submit hidden form
+  const form = document.createElement('form');
+  form.method  = 'POST';
+  form.action  = APPS_SCRIPT_URL;
+  form.target  = '_submitFrame';
+  form.style.display = 'none';
+
+  const input = document.createElement('input');
+  input.type  = 'hidden';
+  input.name  = 'data';
+  input.value = JSON.stringify(buildSheetPayload());
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+
+  // iframe load = request reached the server
+  iframe.onload = () => {
     status.style.background = 'var(--teal-pale)';
     status.style.color = 'var(--teal)';
     status.innerHTML = '✓ Resultado enviado com sucesso!';
-    btn.textContent = '✓ Enviado';
-  } catch (err) {
-    status.style.background = '#fbeaea';
-    status.style.color = 'var(--red)';
-    status.innerHTML = '✗ Erro ao enviar. Verifique sua conexão e tente novamente.';
-    btn.disabled = false;
-    btn.textContent = '☁ Enviar o Resultado';
-  }
+    btn.textContent  = '✓ Enviado';
+  };
+
+  // Fallback timeout in case iframe never fires
+  setTimeout(() => {
+    if (btn.textContent === '⏳ Enviando...') {
+      status.style.background = '#fbeaea';
+      status.style.color = 'var(--red)';
+      status.innerHTML = '✗ Tempo esgotado. Verifique sua conexão e tente novamente.';
+      btn.disabled = false;
+      btn.textContent = '☁ Enviar o Resultado';
+    }
+  }, 10000);
 }
 
 function restart() {
