@@ -775,9 +775,10 @@
         <p><strong>Ponto de corte:</strong> 6,6 (equivalente a 3,0 na escala 1–4) é considerado o limiar que distingue alto e baixo escore de orientação para APS.</p>
       </div>
       <div style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;justify-content:center">
-        <button class="btn btn-primary" style="background:var(--teal)" onclick="exportCSV()">⬇ Exportar resultados em CSV</button>
+        <button class="btn btn-primary" style="background:#1a7340" onclick="sendToDrive()" id="btnDrive">☁ Enviar o Resultado</button>
         <button class="btn btn-restart btn-primary" style="margin-top:0" onclick="restart()">↺ Responder novamente</button>
       </div>
+      <div id="driveStatus" style="display:none;margin-top:16px;text-align:center;font-size:13px;padding:12px 16px;border-radius:10px"></div>
     </div>
   </div>
 
@@ -1246,11 +1247,14 @@ function showResults() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function exportCSV() {
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxu7g-v3monRLu-43Kr48I6g9ZPKZbZjG5XliL0gBWlO0vcez6PjRu6elgoDk1FGkIAGg/exec';
+
+function buildSheetPayload() {
   const name    = document.getElementById('profName').value    || '';
   const cat     = document.getElementById('profCat').value     || '';
   const service = document.getElementById('profService').value || '';
   const date    = new Date().toLocaleDateString('pt-BR');
+  const pgLabel = { all:'Todas as faixas etárias', adults:'Somente adultos', children:'Somente crianças' }[patientGroup] || '';
 
   const scores = {};
   sections.forEach(sec => { scores[sec.id] = calcScore(sec); });
@@ -1267,70 +1271,76 @@ function exportCSV() {
   const generalScore = allMissing >= 4 ? null :
     Math.round(allVals.reduce((a,b)=>a+b,0) / allVals.length * 10) / 10;
 
-  const pgLabel = { all:'Todas as faixas etárias', adults:'Somente adultos', children:'Somente crianças' }[patientGroup] || '';
   const compNames = {
     A:'Acessibilidade', B:'Longitudinalidade', C:'Integração de Cuidados',
     D:'Sistemas de Informações', E:'Serviços Disponíveis', F:'Serviços Prestados',
     G:'Orientação Familiar', H:'Orientação Comunitária'
   };
 
-  const rows = [
-    // Block 1: identification
-    ['PCATool-Brasil 2020 — Versão Profissionais'],
-    [],
-    ['IDENTIFICAÇÃO'],
-    ['Nome', name],
-    ['Categoria profissional', cat],
-    ['Serviço de saúde', service],
-    ['Faixa etária atendida', pgLabel],
-    ['Data', date],
-    [],
-    // Block 2: summary scores
-    ['ESCORES GERAIS'],
-    ['Escore', 'Valor (0–10)', 'Classificação'],
-    ['Escore Essencial da APS',
-      essentialScore !== null ? essentialScore.toFixed(1).replace('.',',') : 'Não calculável',
-      essentialScore !== null ? (essentialScore >= 6.6 ? 'Alto escore' : 'Baixo escore') : ''],
-    ['Escore Geral da APS',
-      generalScore !== null ? generalScore.toFixed(1).replace('.',',') : 'Não calculável',
-      generalScore !== null ? (generalScore >= 6.6 ? 'Alto escore' : 'Baixo escore') : ''],
-    [],
-    // Block 3: components
-    ['ESCORES POR COMPONENTE'],
-    ['Componente', 'Atributo', 'Escore (0–10)', 'Classificação'],
-    ...allIds.map(id => [
-      compNames[id],
-      sections.find(s=>s.id===id).attr,
-      scores[id] !== null ? scores[id].toFixed(1).replace('.',',') : 'Não calculável',
-      scores[id] !== null ? (scores[id] >= 6.6 ? 'Alto escore' : 'Baixo escore') : ''
-    ]),
-    [],
-    // Block 4: individual answers
-    ['RESPOSTAS INDIVIDUAIS'],
-    ['Questão', 'Resposta original', 'Valor numérico', 'Descrição'],
-    ...sections.flatMap(sec => getVisibleQuestions(sec).map(q => {
-      const v = answers[q.id];
-      const desc = { 4:'Com certeza sim', 3:'Provavelmente sim', 2:'Provavelmente não', 1:'Com certeza não', 9:'Não sei/Não lembro' }[v] || '';
-      return [q.id, q.text.replace(/"/g,"'"), v !== undefined ? v : '', desc];
-    }))
+  const fmt = v => v !== null ? v.toFixed(1).replace('.',',') : 'N/C';
+  const cls = v => v === null ? '' : v >= 6.6 ? 'Alto escore' : 'Baixo escore';
+
+  // Build headers
+  const answerIds = sections.flatMap(sec => getVisibleQuestions(sec).map(q => q.id));
+  const headers = [
+    'Data', 'Nome', 'Categoria', 'Serviço', 'Faixa etária atendida',
+    'Escore Essencial', 'Classificação Essencial',
+    'Escore Geral', 'Classificação Geral',
+    ...allIds.map(id => `Escore ${compNames[id]}`),
+    ...allIds.map(id => `Classificação ${compNames[id]}`),
+    ...answerIds
   ];
 
-  const csv = rows.map(r =>
-    r.map(cell => {
-      const s = String(cell);
-      return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g,'""')}"` : s;
-    }).join(',')
-  ).join('\r\n');
+  // Build data row
+  const row = [
+    date, name, cat, service, pgLabel,
+    fmt(essentialScore), cls(essentialScore),
+    fmt(generalScore),   cls(generalScore),
+    ...allIds.map(id => fmt(scores[id])),
+    ...allIds.map(id => cls(scores[id])),
+    ...answerIds.map(id => {
+      const v = answers[id];
+      if (v === undefined) return '';
+      if (v === 9) return 'NS/NL';
+      return v;
+    })
+  ];
 
-  const bom = '\uFEFF'; // UTF-8 BOM for Excel compatibility
-  const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const safeName = (name || 'profissional').replace(/\s+/g, '_');
-  a.download = `PCATool_${safeName}_${date.replace(/\//g,'-')}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  return { headers, row };
+}
+
+async function sendToDrive() {
+  const btn = document.getElementById('btnDrive');
+  const status = document.getElementById('driveStatus');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Enviando...';
+  status.style.display = 'block';
+  status.style.background = '#f0f4f8';
+  status.style.color = 'var(--text-soft)';
+  status.textContent = 'Enviando seus resultados para o Google Drive…';
+
+  try {
+    const payload = buildSheetPayload();
+    const response = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    // no-cors always returns opaque response — assume success if no exception thrown
+    status.style.background = 'var(--teal-pale)';
+    status.style.color = 'var(--teal)';
+    status.innerHTML = '✓ Resultados enviados com sucesso para o Google Drive!';
+    btn.textContent = '✓ Enviado';
+  } catch (err) {
+    status.style.background = '#fbeaea';
+    status.style.color = 'var(--red)';
+    status.innerHTML = '✗ Erro ao enviar. Verifique sua conexão e tente novamente.';
+    btn.disabled = false;
+    btn.textContent = '☁ Enviar o Resultado';
+  }
 }
 
 function restart() {
@@ -1339,6 +1349,9 @@ function restart() {
   currentSectionIndex = 0;
   ['all','adults','children'].forEach(g => document.getElementById('pg-'+g).classList.remove('selected'));
   document.getElementById('profName').value = '';
+  document.getElementById('btnDrive').disabled = false;
+  document.getElementById('btnDrive').textContent = '☁ Enviar o Resultado';
+  document.getElementById('driveStatus').style.display = 'none';
   document.getElementById('profCat').value = '';
   document.getElementById('outroDisclaimer').style.display = 'none';
   document.getElementById('profService').value = '';
